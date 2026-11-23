@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - '.github/workflows/addya-gptv.yml'
+      - 'lib/services/cloud_service.dart'
 
 permissions:
   contents: read
