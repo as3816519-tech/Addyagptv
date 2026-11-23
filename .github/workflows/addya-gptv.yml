@@ -3,6 +3,9 @@ name: Build Addya GPTV APK
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/addya-gptv.yml'
 
 permissions:
   contents: read
@@ -30,6 +33,13 @@ jobs:
           flutter-version: '3.38.10'
           channel: stable
           cache: true
+
+      # The NDK glslc cannot compile the upstream Vulkan cooperative matrix shaders.
+      # Build the CPU backend for the first Android APK; RPC and cloud remain enabled.
+      - name: Disable incompatible Vulkan shaders for test APK
+        run: |
+          sed -i 's/option(LLAMA_ANDROID_VULKAN "Build the Vulkan GPU backend" ON)/option(LLAMA_ANDROID_VULKAN "Build the Vulkan GPU backend" OFF)/' local_plugins/llama_flutter_android/android/CMakeLists.txt
+          grep -F 'option(LLAMA_ANDROID_VULKAN "Build the Vulkan GPU backend" OFF)' local_plugins/llama_flutter_android/android/CMakeLists.txt
 
       - name: Change app name
         run: |
