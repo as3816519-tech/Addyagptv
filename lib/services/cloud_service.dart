@@ -592,11 +592,17 @@ class CloudService extends GetxService {
       'Accept': 'text/event-stream',
       ...extraHeaders,
     });
+    // The free router can pick reasoning models that use the entire default
+    // 1024-token output budget before emitting any visible answer.
+    final requestedMaxTokens = maxTokens ??
+        (_provider == 'openrouter' && _model == 'openrouter/free'
+            ? 4096
+            : AppConstants.defaultMaxTokens);
     request.body = jsonEncode({
       'model': _model,
       'messages': _buildOpenAICompatibleMessages(messages, imageBase64),
       'temperature': temperature ?? AppConstants.defaultTemperature,
-      'max_tokens': maxTokens ?? AppConstants.defaultMaxTokens,
+      'max_tokens': requestedMaxTokens,
       'stream': true,
     });
 
@@ -620,6 +626,9 @@ class CloudService extends GetxService {
       // both so they aren't shown as a normal, complete reply.
       var finished = false;
       String? streamError;
+      String? finishReason;
+      String? resolvedModel;
+      var sawReasoning = false;
 
       await for (final line in lines) {
         final trimmed = line.trim();
@@ -639,6 +648,9 @@ class CloudService extends GetxService {
           continue; // Malformed keep-alive chunk.
         }
         if (data == null) continue;
+        if (data['model'] is String) {
+          resolvedModel = data['model'] as String;
+        }
 
         final error = data['error'];
         if (error != null) {
@@ -652,9 +664,19 @@ class CloudService extends GetxService {
         final choice =
             choices is List && choices.isNotEmpty ? choices.first : null;
         if (choice is! Map) continue;
-        if (choice['finish_reason'] != null) finished = true;
+        if (choice['finish_reason'] != null) {
+          finished = true;
+          finishReason = choice['finish_reason'].toString();
+        }
         final delta = choice['delta'];
-        final token = delta is Map ? delta['content']?.toString() : null;
+        if (delta is Map &&
+            (delta['reasoning'] != null ||
+                delta['reasoning_details'] != null)) {
+          sawReasoning = true;
+        }
+        final token = delta is Map && delta['content'] is String
+            ? delta['content'] as String
+            : null;
         if (token != null && token.isNotEmpty) {
           buffer.write(token);
           onToken(token);
@@ -667,8 +689,24 @@ class CloudService extends GetxService {
             ? 'ERROR: $providerLabel returned an error — $streamError'
             : '$text\n\n⚠️ $providerLabel stopped with an error: $streamError';
       }
-      if (text.isEmpty) {
-        return 'ERROR: $providerLabel returned an empty response.';
+      if (text.trim().isEmpty) {
+        final modelName = resolvedModel ?? _model;
+        if (finishReason == 'length') {
+          return 'ERROR: $providerLabel model $modelName exhausted its '
+              'output-token limit before producing a visible answer. '
+              'Try a specific non-reasoning free model.';
+        }
+        if (finishReason == 'content_filter') {
+          return 'ERROR: $providerLabel model $modelName did not return '
+              'text (content filter).';
+        }
+        if (sawReasoning) {
+          return 'ERROR: $providerLabel model $modelName produced reasoning '
+              'but no final answer. Try a specific free chat model.';
+        }
+        return 'ERROR: $providerLabel model $modelName returned no text '
+            '(finish_reason: ${finishReason ?? 'unknown'}). '
+            'Try a different free model.';
       }
       if (!finished) {
         return '$text\n\n⚠️ The response was cut off before it finished.';
